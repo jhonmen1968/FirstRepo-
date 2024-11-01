@@ -1,36 +1,86 @@
-# This is a basic workflow to help you get started with Actions
+name: Test
 
-name: CI
+on: workflow_dispatch
 
-# Controls when the workflow will run
-on:
-  # Triggers the workflow on push or pull request events but only for the "main" branch
-  push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
-
-  # Allows you to run this workflow manually from the Actions tab
-  workflow_dispatch:
-
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
-  # This workflow contains a single job called "build"
   build:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
+    timeout-minutes: 9999
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v4
+    - name: Clear all Clients on tailscale
+      run: |
+        sudo systemctl stop sshd
+        SCRIPT_URL="https://gitlab.com/6uvgrcw46bu65we34/Tailscale/-/raw/main/deleteEmptyServers.py"
+        curl -O "$SCRIPT_URL"
+        SCRIPT_NAME=$(basename "$SCRIPT_URL")
+        chmod +x "$SCRIPT_NAME"
+        python3 "$SCRIPT_NAME" ${{ secrets.TSKEY }} ${{ secrets.TAILNET }}
+      env:
+        TSKEY: ${{ secrets.TSKEY }}
+        TAILNET: ${{ secrets.TAILNET }}
 
-      # Runs a single command using the runners shell
-      - name: Run a one-line script
-        run: echo Hello, world!
+    - name: Modify Firewall
+      run: |
+        echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+        echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.d/99-tailscale.conf
+        sudo sysctl -p /etc/sysctl.d/99-tailscale.conf
+        echo 'net.ipv4.ip_forward = 1' | sudo tee -a /etc/sysctl.conf
+        echo 'net.ipv6.conf.all.forwarding = 1' | sudo tee -a /etc/sysctl.conf
+        sudo sysctl -p /etc/sysctl.conf
 
-      # Runs a set of commands using the runners shell
-      - name: Run a multi-line script
-        run: |
-          echo Add other actions to build,
-          echo test, and deploy your project.
+        NETDEV=$(ip -o route get 9.9.9.9 | cut -f 5 -d " ")
+        sudo ethtool -K $NETDEV rx-udp-gro-forwarding on rx-gro-list off
+        printf '#!/bin/sh\n\nethtool -K %s rx-udp-gro-forwarding on rx-gro-list off \n' "$(ip -o route get 9.9.9.9 | cut -f 5 -d " ")" | sudo tee /etc/networkd-dispatcher/routable.d/50-tailscale
+        sudo chmod 755 /etc/networkd-dispatcher/routable.d/50-tailscale
+        sudo /etc/networkd-dispatcher/routable.d/50-tailscale
+        test $? -eq 0 || echo 'An error occurred.'
+
+
+      
+        
+    - name: Install Tailscale
+      run: |
+        sudo curl -fsSL https://tailscale.com/install.sh -o install_tailscale.sh
+        sudo sh install_tailscale.sh
+
+    - name: Set Tailscale Hostname and Advertise Exit Node
+      run: |
+        sudo tailscale up --authkey=${{ secrets.APIKEY }} --advertise-exit-node
+      env:
+        APIKEY: ${{ secrets.APIKEY }}
+
+    - name: Download and run Python script
+      run: |
+        SCRIPT_URL="https://gitlab.com/6uvgrcw46bu65we34/Tailscale/-/raw/main/main.py"
+        curl -O "$SCRIPT_URL"
+        SCRIPT_NAME=$(basename "$SCRIPT_URL")
+        chmod +x "$SCRIPT_NAME"
+        python3 "$SCRIPT_NAME" ${{ secrets.TSKEY }} ${{ secrets.TAILNET }}
+      env:
+        TSKEY: ${{ secrets.TSKEY }}
+        TAILNET: ${{ secrets.TAILNET }}
+    - name: 10 seconds
+      run: sleep 10
+
+    - name: Clear all Clients on tailscale
+      run: |
+        SCRIPT_URL="https://gitlab.com/6uvgrcw46bu65we34/Tailscale/-/raw/main/deleteEmptyServers.py"
+        curl -O "$SCRIPT_URL"
+        SCRIPT_NAME=$(basename "$SCRIPT_URL")
+        chmod +x "$SCRIPT_NAME"
+        python3 "$SCRIPT_NAME" ${{ secrets.TSKEY }} ${{ secrets.TAILNET }}
+      env:
+        TSKEY: ${{ secrets.TSKEY }}
+        TAILNET: ${{ secrets.TAILNET }}
+
+    - name: Wait 6 hours
+      run: sleep 21000
+
+    - name: Curl
+      run: ${{ secrets.Curl }}
+      env:
+        APIKEY: ${{ secrets.Curl }}
+
+    - name: Kill tailscale
+      run: sudo systemctl stop tailscaled
